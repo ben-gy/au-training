@@ -1,0 +1,60 @@
+name: Data Pipeline
+
+on:
+  schedule:
+    # SOURCE CADENCE: continuous — the National Training Register changes every working
+    # day as regulators make decisions and providers vary their scope. Monthly is the
+    # fastest cadence this fleet permits, and it is genuinely proportional here: the
+    # aggregate picture (how many qualifications have no provider, where the training
+    # deserts are) moves slowly even though individual records do not.
+    # Staggered to day 9 at an off-hour so repos do not all fire together.
+    - cron: '43 16 9 * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['pipeline/**']
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # The harvest and the gates are dependency-free Node, so there is nothing to install.
+      - name: Harvest the register
+        run: node pipeline/collect.mjs
+
+      - name: Aggregate and run the gates
+        run: node pipeline/aggregate.mjs
+
+      - name: Commit data
+        id: commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add public/data/
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No data change."
+          else
+            git commit -m "Update data $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            # Never `git pull --rebase` generated data — a conflict here means two runs
+            # raced, and rebasing silently interleaves two different snapshots.
+            git push
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A push made with GITHUB_TOKEN does NOT trigger deploy.yml. Without this the data
+      # job goes green, the commit lands, and the live site never changes.
+      - name: Deploy the new data
+        if: steps.commit.outputs.changed == 'true'
+        run: gh workflow run deploy.yml --ref main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
