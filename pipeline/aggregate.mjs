@@ -5,7 +5,7 @@
 // fatal gate before it is written; see gates.mjs for what each one defends against.
 
 import { mkdir, readFile, writeFile, copyFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -384,12 +384,31 @@ async function main() {
     })),
   });
 
+  // Boundary geometry. The file is COMMITTED to public/data/ so the deployed repo is
+  // self-contained; the copy from the factory's shared patterns directory is a convenience
+  // for when this runs inside the monorepo, and that directory does not exist on CI.
+  //
+  // Either way the file must be present and must be REAL geometry: a boundary file under
+  // 50 KB is hand-authored coordinates, which is how a map of rectangles once shipped.
+  const geoOut = join(OUT, 'au-states.geojson');
   if (existsSync(GEO_SOURCE)) {
-    await copyFile(GEO_SOURCE, join(OUT, 'au-states.geojson'));
-    log('  copied au-states.geojson (ABS ASGS, CC BY 4.0)');
+    await copyFile(GEO_SOURCE, geoOut);
+    log('  copied au-states.geojson from the shared patterns directory');
+  } else if (existsSync(geoOut)) {
+    log('  using the committed au-states.geojson (shared patterns directory not present)');
   } else {
-    throw new Error(`boundary file missing at ${GEO_SOURCE} — the map cannot ship without real geometry`);
+    throw new Error(
+      `no boundary file at ${GEO_SOURCE} or ${geoOut} — the map cannot ship without real geometry`
+    );
   }
+  const geoBytes = statSync(geoOut).size;
+  if (geoBytes < 50_000) {
+    throw new Error(
+      `au-states.geojson is only ${geoBytes} B. Anything under 50 KB is hand-authored ` +
+        `coordinates, not a real ABS boundary file, and must never be published as a map.`
+    );
+  }
+  log(`  boundaries: ${(geoBytes / 1024).toFixed(0)} KB (ABS ASGS, CC BY 4.0)`);
 
   log('\nheadline figures');
   log(`  ${summary.orphans} of ${summary.currentQualifications} current qualifications have NO provider able to teach them`);
